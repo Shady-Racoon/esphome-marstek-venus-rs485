@@ -1,3 +1,7 @@
+substitutions:
+  mqtt_server: "10.10.10.10" # mqtt broker IP
+  topic_grid_power: "/Hichi/Power" # (grid power > 0 -> battery will discharge; grid power < 0 -> battery will charge)
+
 esphome:
   name: venuse
   friendly_name: VenusE
@@ -18,7 +22,7 @@ wifi:
   password: !secret wifi_password
 
 mqtt:
-  broker: xxx.xxx.xxx.xxx # Fill your broker IP
+  broker: ${mqtt_server}
   username:  !secret mqtt_username
   password:  !secret mqtt_password
 
@@ -79,7 +83,7 @@ modbus_controller:
     address: 0x1
     modbus_id: modbus1
     command_throttle: 30ms
-    update_interval: 5s
+    update_interval: 1s
 
 button:
   - platform: template
@@ -88,18 +92,27 @@ button:
     entity_category: config
     disabled_by_default: true
     on_press:
-      - switch.turn_on: reset_device_sw
+      then:
+        - lambda: |-
+            modbus_controller::ModbusController *controller = id(mt);
+            modbus_controller::ModbusCommandItem resetfilter = modbus_controller::ModbusCommandItem::create_write_single_command(controller, 41000, 21930);
+            controller->queue_command(resetfilter);
     web_server:
       sorting_group_id: Maintenance
       sorting_weight: -68
 
+  # UNTESTED!!!
   - platform: template
     name: "Factory Reset"
     icon: "mdi:factory"
     entity_category: config
     disabled_by_default: true
     on_press:
-      - switch.turn_on: factory_reset_sw
+      then:
+        - lambda: |-
+            modbus_controller::ModbusController *controller = id(mt);
+            modbus_controller::ModbusCommandItem resetfilter = modbus_controller::ModbusCommandItem::create_write_single_command(controller, 41001, 21930);
+            controller->queue_command(resetfilter);
     web_server:
       sorting_group_id: Maintenance
       sorting_weight: -67
@@ -132,7 +145,7 @@ text_sensor:
     raw_encode: NONE
     icon: mdi:home-heart
     entity_category: diagnostic
-    skip_updates: 20
+    skip_updates: 60
     lambda: |-
       uint16_t int_mode = (data[item->offset] << 8) + data[item->offset+1];
       ESP_LOGD("main","Parsed operation mode int : %d", int_mode);
@@ -222,16 +235,14 @@ sensor:
       float eff;
 
       if (ac < 0) {
-        eff = (abs(batt) / abs(ac)) * 100.0;
+        eff = (batt / ac) * 100.0; // Charging -> neg. values
       } 
       else {
-        eff = (abs(ac) / abs(batt)) * 100.0;
+        eff = (ac / abs(batt)) * 100.0; // Discharging -> pos. values
       }
 
-      if (eff < 0) return 0;
-      if (eff > 100) return 100;
-
       return eff;
+    update_interval: 1s
     web_server:
       sorting_group_id: Info
       sorting_weight: -97
@@ -263,7 +274,6 @@ sensor:
     device_class: power
     state_class: measurement
     accuracy_decimals: 0
-    skip_updates: 2
     web_server:
       sorting_group_id: Info
       sorting_weight: -95
@@ -358,7 +368,7 @@ sensor:
     filters:
       - multiply: 0.001
     id: marstek_max_cell_voltage
-    skip_updates: 10
+    skip_updates: 60
 
   - name: "Min Cell Voltage"
     internal: True
@@ -375,7 +385,7 @@ sensor:
     filters:
       - multiply: 0.001
     id: marstek_min_cell_voltage
-    skip_updates: 10
+    skip_updates: 60
 
   - platform: template
     name: "Cell Voltage Delta"
@@ -415,7 +425,7 @@ sensor:
   - platform: mqtt_subscribe
     name: "Grid Power Raw"
     id: grid_power_raw
-    topic: # Fill your mqtt topic for grid power (grid+ > battery will discharge; grid- > battery will charge)
+    topic: ${topic_grid_power} 
     internal: true
     on_value:
       then:
@@ -502,7 +512,7 @@ select:
     optionsmap:
       "enable": 21930
       "disable": 21947
-    skip_updates: 2
+    skip_updates: 10
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -78
@@ -518,7 +528,7 @@ select:
       "manual": 0
       "anti-feed": 1
       "ai": 2
-    skip_updates: 2
+    skip_updates: 10
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -77
@@ -532,7 +542,7 @@ select:
     optionsmap:
       "enable": 0
       "disable": 1
-    skip_updates: 2
+    skip_updates: 10
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -76
@@ -547,7 +557,7 @@ select:
       "stop": 0
       "charge": 1
       "discharge": 2
-    skip_updates: 2
+    skip_updates: 10
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -75
@@ -640,6 +650,7 @@ number:
     min_value: 80
     max_value: 100
     multiply: 10
+    skip_updates: 60
     web_server:
       sorting_group_id: AutoMode
       sorting_weight: -80
@@ -656,6 +667,7 @@ number:
     min_value: 12
     max_value: 30
     multiply: 10
+    skip_updates: 60
     web_server:
       sorting_group_id: AutoMode
       sorting_weight: -79
@@ -673,6 +685,7 @@ number:
     min_value: 12
     max_value: 100
     step: 1
+    skip_updates: 60
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -74
@@ -690,7 +703,7 @@ number:
     min_value: 0
     max_value: 2500
     step: 1
-    skip_updates: 2
+    skip_updates: 60
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -73
@@ -708,7 +721,7 @@ number:
     min_value: 0
     max_value: 2500
     step: 1
-    skip_updates: 2
+    skip_updates: 60
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -72
@@ -758,7 +771,6 @@ script:
       - select.set:
           id: set_chargedischarge
           option: "charge"
-      - delay: 30ms
 
   - id: script_set_mode_discharge
     mode: restart
@@ -766,7 +778,6 @@ script:
       - select.set:
           id: set_chargedischarge
           option: "discharge"
-      - delay: 30ms
 
   - id: script_set_mode_stop
     mode: restart
@@ -774,7 +785,6 @@ script:
       - select.set:
           id: set_chargedischarge
           option: "stop"
-      - delay: 30ms
 
   - id: script_enable_rs485
     mode: restart
@@ -782,7 +792,6 @@ script:
       - select.set:
           id: rs485_control_mode
           option: "enable"
-      - delay: 30ms
 
 interval:
   - interval: 10s
