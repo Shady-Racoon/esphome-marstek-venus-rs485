@@ -1,0 +1,862 @@
+esphome:
+  name: venuse
+  friendly_name: VenusE
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+mqtt:
+  broker: xxx.xxx.xxx.xxx # Fill your broker IP
+  username:  !secret mqtt_username
+  password:  !secret mqtt_password
+
+globals:
+  - id: last_mqtt_update
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
+  - id: last_abs_power
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+  - id: last_power_setpoint
+    type: float
+    restore_value: no
+    initial_value: '0'
+
+web_server:
+  port: 80
+  version: 3
+  include_internal: False
+  local: True
+  sorting_groups:
+    - id: Info
+      name: "Info"
+      sorting_weight: -50
+    - id: AutoMode
+      name: "Auto Mode"
+      sorting_weight: -49
+    - id: AdvControl
+      name: "Adv. Control"
+      sorting_weight: -45
+    - id: Diagnostic
+      name: "Diagnostic"
+      sorting_weight: 50
+    - id: Maintenance
+      name: "Maintenance"
+      sorting_weight: 51
+
+uart:
+  - id: mod_bus
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 115200
+    data_bits: 8
+    stop_bits: 1
+    parity: NONE
+
+modbus:
+  - uart_id: mod_bus
+    id: modbus1
+    send_wait_time: 30ms
+
+modbus_controller:
+  - id: mt
+    address: 0x1
+    modbus_id: modbus1
+    command_throttle: 30ms
+    update_interval: 5s
+
+button:
+  - platform: template
+    name: "Reset Device"
+    icon: "mdi:restart"
+    entity_category: config
+    disabled_by_default: true
+    on_press:
+      - switch.turn_on: reset_device_sw
+    web_server:
+      sorting_group_id: Maintenance
+      sorting_weight: -68
+
+  - platform: template
+    name: "Factory Reset"
+    icon: "mdi:factory"
+    entity_category: config
+    disabled_by_default: true
+    on_press:
+      - switch.turn_on: factory_reset_sw
+    web_server:
+      sorting_group_id: Maintenance
+      sorting_weight: -67
+
+text_sensor:
+  - platform: template
+    name: "Inverter State"
+    lambda: |-
+      switch (int(id(inverter_state).state)) {
+        case 0: return std::string("Sleep");
+        case 1: return std::string("Standby");
+        case 2: return std::string("Charge");
+        case 3: return std::string("Discharge");
+        case 4: return std::string("Fault");
+        case 5: return std::string("Idle");
+        case 6: return std::string("AC bypass");
+        default: return std::string("Unknown");
+      };
+    update_interval: 5s
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -99
+
+  - platform: modbus_controller
+    id: power_restriction_discharge
+    name: "Power restriction"
+    modbus_controller_id: mt
+    register_type: holding
+    address: 41010
+    raw_encode: NONE
+    icon: mdi:home-heart
+    entity_category: diagnostic
+    skip_updates: 20
+    lambda: |-
+      uint16_t int_mode = (data[item->offset] << 8) + data[item->offset+1];
+      ESP_LOGD("main","Parsed operation mode int : %d", int_mode);
+      std::string mode_str;
+      switch (int_mode) {
+        case 0:  mode_str = "Off"; break;
+        case 1:  mode_str = "800W limited"; break;                                                              
+      }
+      return mode_str;
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -89
+
+  - platform: template
+    name: "Software Version"
+    id: software_version_text
+    icon: mdi:factory
+    update_interval: never
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: Diagnostic
+      sorting_weight: -71
+
+  - platform: template
+    name: "Firmware Version"
+    id: firmware_version_text
+    icon: mdi:factory
+    update_interval: never
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: Diagnostic
+      sorting_weight: -70
+
+  - platform: template
+    name: "BMS Version"
+    id: bms_version_text
+    icon: mdi:factory
+    update_interval: never
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: Diagnostic
+      sorting_weight: -69
+
+sensor:
+  - platform: modbus_controller
+    id: inverter_state
+    icon: mdi:state-machine
+    modbus_controller_id: mt
+    register_type: holding
+    address: 35100
+    value_type: U_WORD
+    internal: true
+
+  - name: "State Of Charge"
+    id: "battery_state_of_charge"
+    platform: modbus_controller
+    device_class: battery
+    state_class: measurement
+    modbus_controller_id: mt
+    register_type: holding
+    address: 32104
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -99
+
+  - platform: template
+    name: "Inverter Efficiency"
+    id: inverter_efficiency
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    state_class: measurement
+    lambda: |-
+      float ac = id(ac_power).state;
+      float batt = id(battery_power).state;
+
+      if (isnan(ac) || isnan(batt) || ac == 0) {
+        return NAN;
+      }
+
+      if (abs(ac) < 50 || abs(batt) < 50) {
+        return NAN;
+      }
+
+      float eff;
+
+      if (ac < 0) {
+        eff = (abs(batt) / abs(ac)) * 100.0;
+      } 
+      else {
+        eff = (abs(ac) / abs(batt)) * 100.0;
+      }
+
+      if (eff < 0) return 0;
+      if (eff > 100) return 100;
+
+      return eff;
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -97
+
+  - name: "AC Power"
+    id: ac_power
+    icon: mdi:flash
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 32202
+    value_type: S_DWORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -96
+
+  - name: "Battery Power"
+    id: battery_power
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 32102
+    value_type: S_DWORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    skip_updates: 2
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -95
+
+  - name: "Total Charged Energy"
+    id: "total_charging_energy"
+    icon: mdi:chart-bar
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 33000
+    value_type: U_DWORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+    register_count: 2
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -94
+
+  - name: "Total Discharged Energy"
+    id: "total_discharging_energy"
+    icon: mdi:chart-bar
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 33002
+    value_type: U_DWORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+    register_count: 2
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -93
+
+  - platform: template
+    name: "Remaining Capacity"
+    id: "battery_remaining_capacity"
+    icon: mdi:battery-arrow-down-outline
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 2
+    update_interval: 300s
+    lambda: |-
+      if (id(battery_total_energy).has_state() && id(battery_state_of_charge).has_state()) {
+        float total_energy = id(battery_total_energy).state;
+        float soc = id(battery_state_of_charge).state / 100.0;
+        return roundf(total_energy * soc * 100) / 100; // Ensures two decimal places
+      }
+      return NAN;
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -92
+
+  - name: "Total Energy"
+    id: "battery_total_energy"
+    icon: mdi:battery-charging-100
+    platform: modbus_controller
+    device_class: energy_storage
+    state_class: measurement
+    modbus_controller_id: mt
+    register_type: holding
+    address: 32105 
+    value_type: U_WORD
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001 # Firmware 148: 0.001 / Firmware 147: 0.01
+    skip_updates: 60
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -91
+
+  - name: "Max Cell Voltage"
+    internal: True
+    platform: modbus_controller
+    icon: mdi:sine-wave
+    modbus_controller_id: mt
+    register_type: holding
+    address: 37007
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    accuracy_decimals: 2
+    state_class: measurement
+    filters:
+      - multiply: 0.001
+    id: marstek_max_cell_voltage
+    skip_updates: 10
+
+  - name: "Min Cell Voltage"
+    internal: True
+    platform: modbus_controller
+    icon: mdi:sine-wave
+    modbus_controller_id: mt
+    register_type: holding
+    address: 37008
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    accuracy_decimals: 2
+    state_class: measurement
+    filters:
+      - multiply: 0.001
+    id: marstek_min_cell_voltage
+    skip_updates: 10
+
+  - platform: template
+    name: "Cell Voltage Delta"
+    icon: mdi:sine-wave
+    unit_of_measurement: "V"
+    device_class: voltage
+    accuracy_decimals: 3
+    state_class: measurement
+    lambda: |-
+      if (isnan(id(marstek_max_cell_voltage).state) || isnan(id(marstek_min_cell_voltage).state)) {
+        return NAN;
+      }
+      return id(marstek_max_cell_voltage).state - id(marstek_min_cell_voltage).state;
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -90
+
+  - name: "Internal Temperature"
+    id: "internal_temperature"
+    icon: mdi:thermometer
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 35000
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+    skip_updates: 60
+    web_server:
+      sorting_group_id: Info
+      sorting_weight: -88
+
+  - platform: mqtt_subscribe
+    name: "Grid Power Raw"
+    id: grid_power_raw
+    topic: # Fill your mqtt topic for grid power (grid+ > battery will discharge; grid- > battery will charge)
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(last_mqtt_update) = millis();
+
+  - platform: template
+    name: "Grid Power"
+    id: grid_power
+    unit_of_measurement: "W"
+    update_interval: 1s
+    lambda: |-
+      if (millis() - id(last_mqtt_update) > 10000) {
+        return 0;
+      }
+
+      return id(grid_power_raw).state;
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -86
+
+  - platform: modbus_controller
+    id: software_version
+    icon: mdi:factory
+    modbus_controller_id: mt
+    register_type: holding
+    address: 31100
+    value_type: U_WORD
+    accuracy_decimals: 0
+    skip_updates: 60
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            int version = (int)x;
+            char buf[5];
+            sprintf(buf, "V%d", version);
+            id(software_version_text).publish_state(buf);
+
+  - platform: modbus_controller
+    id: firmware_version
+    icon: mdi:factory
+    modbus_controller_id: mt
+    register_type: holding
+    address: 31101
+    value_type: U_WORD
+    accuracy_decimals: 0
+    skip_updates: 60
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            int version = (int)x;
+            char buf[5];
+            sprintf(buf, "V%d", version);
+            id(firmware_version_text).publish_state(buf);
+
+  - platform: modbus_controller
+    id: bms_version
+    icon: mdi:factory
+    modbus_controller_id: mt
+    register_type: holding
+    address: 31102
+    value_type: U_WORD
+    accuracy_decimals: 0
+    skip_updates: 60
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            int version = (int)x;
+            char buf[5];
+            sprintf(buf, "V%d", version);
+            id(bms_version_text).publish_state(buf);
+
+select:
+  - name: "RS485 Control Mode"
+    id: "rs485_control_mode"
+    icon: mdi:connection
+    platform: modbus_controller
+    modbus_controller_id: mt
+    address: 42000
+    value_type: U_WORD
+    optionsmap:
+      "enable": 21930
+      "disable": 21947
+    skip_updates: 2
+    web_server:
+      sorting_group_id: AdvControl
+      sorting_weight: -78
+
+  - name: "User Work Mode"
+    id: "user_work_mode"
+    icon: mdi:auto-mode
+    platform: modbus_controller
+    modbus_controller_id: mt
+    address: 43000
+    value_type: U_WORD
+    optionsmap:
+      "manual": 0
+      "anti-feed": 1
+      "ai": 2
+    skip_updates: 2
+    web_server:
+      sorting_group_id: AdvControl
+      sorting_weight: -77
+
+  - name: "Backup Function"
+    id: "backup_function"
+    platform: modbus_controller
+    modbus_controller_id: mt
+    address: 41200
+    value_type: U_WORD
+    optionsmap:
+      "enable": 0
+      "disable": 1
+    skip_updates: 2
+    web_server:
+      sorting_group_id: AdvControl
+      sorting_weight: -76
+
+  - name: "Set Charge ⁄ Discharge"
+    id: "set_chargedischarge"
+    platform: modbus_controller
+    modbus_controller_id: mt
+    address: 42010
+    value_type: U_WORD
+    optionsmap:
+      "stop": 0
+      "charge": 1
+      "discharge": 2
+    skip_updates: 2
+    web_server:
+      sorting_group_id: AdvControl
+      sorting_weight: -75
+
+number:
+  - platform: template
+    name: "Target Grid (Charging)"
+    id: target_grid_charge
+    min_value: -1000
+    max_value: 0
+    step: 10
+    initial_value: -100
+    unit_of_measurement: "W"
+    optimistic: True
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -85
+
+  - platform: template
+    name: "Target Grid (Discharging)"
+    id: target_grid_discharge
+    min_value: 0
+    max_value: 1000
+    step: 10
+    initial_value: 50
+    unit_of_measurement: "W"
+    optimistic: True
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -84
+
+  - platform: template
+    name: "Min Grid Power for Charging"
+    id: ChargeStart_MinPwrGrid
+    min_value: 0
+    max_value: 2000
+    step: 50
+    initial_value: 400
+    unit_of_measurement: "W"
+    optimistic: True
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -83
+
+  - name: "Max Charge Power"
+    id: "max_charge_power"
+    icon: mdi:tune-variant
+    mode: box
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 44002
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: 2500
+    step: 1
+    skip_updates: 60
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -82
+
+  - name: "Max Discharge Power"
+    id: "max_discharge_power"
+    icon: mdi:tune-variant
+    mode: box
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 44003
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: 2500
+    step: 1
+    skip_updates: 60
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -81
+
+  - name: "Set Charging Cutoff"
+    id: "charging_cutoff_capacity"
+    icon: mdi:battery-90
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 44000
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 80
+    max_value: 100
+    multiply: 10
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -80
+
+  - name: "Set Discharging Cutoff"
+    id: "discharging_cutoff_capacity"
+    icon: mdi:battery-10
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 44001
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 12
+    max_value: 30
+    multiply: 10
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -79
+
+  - name: "Charge to SOC"
+    id: "charge_to_soc"
+    icon: mdi:battery-charging-medium 
+    mode: box
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 42011
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 12
+    max_value: 100
+    step: 1
+    web_server:
+      sorting_group_id: AdvControl
+      sorting_weight: -74
+
+  - name: "Set Charge Power"
+    id: "set_charge_power"
+    icon: mdi:tune-variant
+    mode: box
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 42020
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: 2500
+    step: 1
+    skip_updates: 2
+    web_server:
+      sorting_group_id: AdvControl
+      sorting_weight: -73
+
+  - name: "Set Discharge Power"
+    id: "set_discharge_power"
+    icon: mdi:tune-variant
+    mode: box
+    platform: modbus_controller
+    modbus_controller_id: mt
+    register_type: holding
+    address: 42021
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: 2500
+    step: 1
+    skip_updates: 2
+    web_server:
+      sorting_group_id: AdvControl
+      sorting_weight: -72
+
+switch:
+  - platform: template
+    name: "Automatic mode"
+    id: automatic_mode
+    icon: mdi:robot
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    turn_off_action:
+      - select.set:
+          id: set_chargedischarge
+          option: "stop"
+      - number.set:
+          id: set_charge_power
+          value: 0
+      - number.set:
+          id: set_discharge_power
+          value: 0
+      - globals.set:
+          id: last_power_setpoint
+          value: '0'
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -87
+  
+script:
+  - id: script_set_charge_power
+    mode: restart
+    then:
+      - number.set:
+          id: set_charge_power
+          value: !lambda 'return id(last_abs_power);'
+  
+  - id: script_set_discharge_power
+    mode: restart
+    then:
+      - number.set:
+          id: set_discharge_power
+          value: !lambda 'return id(last_abs_power);'
+  
+  - id: script_set_mode_charge
+    mode: restart
+    then:
+      - select.set:
+          id: set_chargedischarge
+          option: "charge"
+      - delay: 30ms
+
+  - id: script_set_mode_discharge
+    mode: restart
+    then:
+      - select.set:
+          id: set_chargedischarge
+          option: "discharge"
+      - delay: 30ms
+
+  - id: script_set_mode_stop
+    mode: restart
+    then:
+      - select.set:
+          id: set_chargedischarge
+          option: "stop"
+      - delay: 30ms
+
+  - id: script_enable_rs485
+    mode: restart
+    then:
+      - select.set:
+          id: rs485_control_mode
+          option: "enable"
+      - delay: 30ms
+
+interval:
+  - interval: 10s
+    then:
+      - lambda: |-
+          
+          if (!id(automatic_mode).state) return;
+          if (!id(grid_power).has_state()) return;
+          if (!id(battery_state_of_charge).has_state()) return;
+
+          if (id(rs485_control_mode).state == "disable") {
+            id(script_enable_rs485).execute();
+          }
+
+          float grid_curr = id(grid_power).state;
+          float soc  = id(battery_state_of_charge).state;
+          float curr_setpoint = id(last_power_setpoint);
+
+          if (isnan(curr_setpoint)) {
+            curr_setpoint = 0.0;
+          }
+
+          float LimitMax_ChargeP = id(max_charge_power).state;
+          float LimitMax_DischargeP = id(max_discharge_power).state;
+          float LimitMax_SOC = id(charging_cutoff_capacity).state;
+          float LimitMin_SOC = id(discharging_cutoff_capacity).state;
+
+          float ChargeStart_MinPwr = id(ChargeStart_MinPwrGrid).state;
+          float grid_target = (curr_setpoint > 0)
+            ? id(target_grid_charge).state
+            : id(target_grid_discharge).state;
+
+          float correction = (grid_curr - grid_target) * 0.5;
+          float new_setpoint_calc = curr_setpoint - correction;
+
+          float new_setpoint_final;
+
+          if (curr_setpoint <= 0) {
+            if (new_setpoint_calc > 0) {
+              if (grid_curr < (-ChargeStart_MinPwr)) {
+                new_setpoint_final = new_setpoint_calc;
+              } else {
+                new_setpoint_final = 0;
+              }
+            } else {
+              new_setpoint_final = new_setpoint_calc;
+            }
+          } else {
+            new_setpoint_final = new_setpoint_calc;
+          }
+
+          new_setpoint_final = floor(new_setpoint_final / 50.0) * 50.0;
+
+          if (new_setpoint_final > LimitMax_ChargeP) new_setpoint_final = LimitMax_ChargeP;
+          if (new_setpoint_final < -LimitMax_DischargeP) new_setpoint_final = -LimitMax_DischargeP;
+
+          if (new_setpoint_final > 0 && soc >= LimitMax_SOC) new_setpoint_final = 0;
+          if (new_setpoint_final < 0 && soc <= LimitMin_SOC)  new_setpoint_final = 0;
+
+          if (fabs(new_setpoint_final - curr_setpoint) < 50) {
+            return;
+          }
+
+          id(last_power_setpoint) = new_setpoint_final;
+          id(last_abs_power) = abs((int)new_setpoint_final);
+
+          if (new_setpoint_final > 10) {
+            id(script_set_charge_power).execute();
+            id(script_set_mode_charge).execute();
+          } else if (new_setpoint_final < -10) {
+            id(script_set_discharge_power).execute();
+            id(script_set_mode_discharge).execute();
+          } else {
+            id(script_set_mode_stop).execute();
+            id(script_set_charge_power).execute();
+            id(script_set_discharge_power).execute();
+          }
