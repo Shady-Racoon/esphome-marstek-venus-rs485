@@ -42,7 +42,19 @@ Inverter efficiency values are reported as follows:
 ## Notes
 
 - The discharge power restriction must be configured via the official app. After initial setup, the app is no longer required.  
-- The factory reset button has not yet been tested.  
+- The factory reset button has not yet been tested.
+- Grid data from a Hichi meter can be fetched every second using a Tasmota script, for example.
+
+```tasmota
+    >D
+    MQT = "Hichi"
+    >B
+    =>sensor53 r
+    >M
+    <YOUR M Section for the SML>
+    >S
+    =>publish %MQT%/Grid %4sml[1]%
+``` 
 
 ## ToDo
 
