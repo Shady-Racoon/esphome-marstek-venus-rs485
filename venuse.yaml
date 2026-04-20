@@ -348,7 +348,6 @@ sensor:
     accuracy_decimals: 3
     filters:
       - multiply: 0.001 # Firmware 148: 0.001 / Firmware 147: 0.01
-    skip_updates: 60
     web_server:
       sorting_group_id: Info
       sorting_weight: -91
