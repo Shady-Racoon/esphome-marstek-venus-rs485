@@ -56,6 +56,16 @@ Inverter efficiency values are reported as follows:
     =>publish %MQT%/Grid %4sml[1]%
 ``` 
 
+## Changelog
+
+ - Rewrite of yaml to ensure compatibility with ESPHome 2026.9.1 and later
+ 
+ - The **Auto Mode** web interface includes two additional settings:
+   - **Prevent Full Charge Before 14:00**: Enables the optional charging limit (disabled by default).
+   - **SOC Limit Before 14:00**: Maximum SOC allowed by automatic charging before 14:00 (default: 90%, configurable from 50% to 99%).
+   
+This feature affects **ESPHome automatic mode only**, not manual commands or other external controllers.
+
 ## ToDo
 
 - Add a logic level shifter to reduce ESP32 RX/TX voltage to 3.3V
