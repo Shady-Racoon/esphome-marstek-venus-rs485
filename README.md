@@ -23,10 +23,10 @@ This project uses an ESP32 running ESPHome to control the device independently, 
 ![Wiring](img/Wiring.png)
 
 ## Current Controls
-
-![Screen1](img/Screen1.png)
-![Screen2](img/Screen2.png)
-
+<p align="center">
+  <img src="img/Screen1.png" alt="Web Interface" width="400">
+  <img src="img/Screen2.png" alt="Web Interface" width="400">
+</p>
 ## Configuration
 
 The setup expects a single MQTT topic providing grid power data:
