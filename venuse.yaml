@@ -1,6 +1,6 @@
 substitutions:
   mqtt_server: "10.10.10.10" # mqtt broker IP
-  topic_grid_power: "/Hichi/Power" # (grid power > 0 -> battery will discharge; grid power < 0 -> battery will charge)
+  topic_grid_power: "/Hichi/Power" # grid power > 0 -> discharge; < 0 -> charge
 
 esphome:
   name: venuse
@@ -23,8 +23,8 @@ wifi:
 
 mqtt:
   broker: ${mqtt_server}
-  username:  !secret mqtt_username
-  password:  !secret mqtt_password
+  username: !secret mqtt_username
+  password: !secret mqtt_password
 
 globals:
   - id: last_mqtt_update
@@ -41,6 +41,12 @@ globals:
     type: float
     restore_value: no
     initial_value: '0'
+
+# Local time for optional charging limit (DST-aware)
+time:
+  - platform: sntp
+    id: local_time
+    timezone: Europe/Berlin
 
 web_server:
   port: 80
@@ -77,15 +83,24 @@ modbus:
   - uart_id: mod_bus
     id: modbus1
     send_wait_time: 30ms
+    turnaround_time: 30ms
 
 modbus_controller:
   - id: mt
     address: 0x1
     modbus_id: modbus1
-    command_throttle: 30ms
     update_interval: 1s
+  - id: mt_medium
+    address: 0x1
+    modbus_id: modbus1
+    update_interval: 10s
+  - id: mt_slow
+    address: 0x1
+    modbus_id: modbus1
+    update_interval: 60s
 
 button:
+
   - platform: template
     name: "Reset Device"
     icon: "mdi:restart"
@@ -93,10 +108,11 @@ button:
     disabled_by_default: true
     on_press:
       then:
-        - lambda: |-
-            modbus_controller::ModbusController *controller = id(mt);
-            modbus_controller::ModbusCommandItem resetfilter = modbus_controller::ModbusCommandItem::create_write_single_command(controller, 41000, 21930);
-            controller->queue_command(resetfilter);
+        - modbus_client.write_single_register:
+            modbus_id: modbus1
+            address: 0x01
+            start_address: 41000
+            value: 21930
     web_server:
       sorting_group_id: Maintenance
       sorting_weight: -68
@@ -109,13 +125,15 @@ button:
     disabled_by_default: true
     on_press:
       then:
-        - lambda: |-
-            modbus_controller::ModbusController *controller = id(mt);
-            modbus_controller::ModbusCommandItem resetfilter = modbus_controller::ModbusCommandItem::create_write_single_command(controller, 41001, 21930);
-            controller->queue_command(resetfilter);
+        - modbus_client.write_single_register:
+            modbus_id: modbus1
+            address: 0x01
+            start_address: 41001
+            value: 21930
     web_server:
       sorting_group_id: Maintenance
       sorting_weight: -67
+  # UNTESTED!!!
 
 text_sensor:
   - platform: template
@@ -139,13 +157,12 @@ text_sensor:
   - platform: modbus_controller
     id: power_restriction_discharge
     name: "Power restriction"
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 41010
     raw_encode: NONE
     icon: mdi:home-heart
     entity_category: diagnostic
-    skip_updates: 60
     lambda: |-
       uint16_t int_mode = (data[item->offset] << 8) + data[item->offset+1];
       ESP_LOGD("main","Parsed operation mode int : %d", int_mode);
@@ -163,7 +180,7 @@ text_sensor:
     name: "Software Version"
     id: software_version_text
     icon: mdi:factory
-    update_interval: never
+    update_interval: never  # updates only when sensor triggers
     entity_category: diagnostic
     web_server:
       sorting_group_id: Diagnostic
@@ -173,7 +190,7 @@ text_sensor:
     name: "Firmware Version"
     id: firmware_version_text
     icon: mdi:factory
-    update_interval: never
+    update_interval: never  # updates only when sensor triggers
     entity_category: diagnostic
     web_server:
       sorting_group_id: Diagnostic
@@ -183,7 +200,7 @@ text_sensor:
     name: "BMS Version"
     id: bms_version_text
     icon: mdi:factory
-    update_interval: never
+    update_interval: never  # updates only when sensor triggers
     entity_category: diagnostic
     web_server:
       sorting_group_id: Diagnostic
@@ -191,16 +208,16 @@ text_sensor:
 
 sensor:
   - platform: modbus_controller
-    id: inverter_state
+    id: inverter_state  # No name, since it's internal
     icon: mdi:state-machine
     modbus_controller_id: mt
     register_type: holding
     address: 35100
     value_type: U_WORD
-    internal: true
+    internal: true # Hides from Home Assistant
 
   - name: "State Of Charge"
-    id: "battery_state_of_charge"
+    id: "battery_state_of_charge" # Was marstek_soc
     platform: modbus_controller
     device_class: battery
     state_class: measurement
@@ -292,7 +309,6 @@ sensor:
     accuracy_decimals: 2
     filters:
       - multiply: 0.01
-    register_count: 2
     web_server:
       sorting_group_id: Info
       sorting_weight: -94
@@ -311,7 +327,6 @@ sensor:
     accuracy_decimals: 2
     filters:
       - multiply: 0.01
-    register_count: 2
     web_server:
       sorting_group_id: Info
       sorting_weight: -93
@@ -356,7 +371,7 @@ sensor:
     internal: True
     platform: modbus_controller
     icon: mdi:sine-wave
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 37007
     value_type: U_WORD
@@ -367,13 +382,12 @@ sensor:
     filters:
       - multiply: 0.001
     id: marstek_max_cell_voltage
-    skip_updates: 60
 
   - name: "Min Cell Voltage"
     internal: True
     platform: modbus_controller
     icon: mdi:sine-wave
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 37008
     value_type: U_WORD
@@ -384,7 +398,6 @@ sensor:
     filters:
       - multiply: 0.001
     id: marstek_min_cell_voltage
-    skip_updates: 60
 
   - platform: template
     name: "Cell Voltage Delta"
@@ -406,7 +419,7 @@ sensor:
     id: "internal_temperature"
     icon: mdi:thermometer
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 35000
     value_type: S_WORD
@@ -416,7 +429,6 @@ sensor:
     accuracy_decimals: 1
     filters:
       - multiply: 0.1
-    skip_updates: 60
     web_server:
       sorting_group_id: Info
       sorting_weight: -88
@@ -424,7 +436,7 @@ sensor:
   - platform: mqtt_subscribe
     name: "Grid Power Raw"
     id: grid_power_raw
-    topic: ${topic_grid_power} 
+    topic: ${topic_grid_power}
     internal: true
     on_value:
       then:
@@ -449,12 +461,11 @@ sensor:
   - platform: modbus_controller
     id: software_version
     icon: mdi:factory
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 31100
     value_type: U_WORD
     accuracy_decimals: 0
-    skip_updates: 60
     internal: true
     on_value:
       then:
@@ -467,12 +478,11 @@ sensor:
   - platform: modbus_controller
     id: firmware_version
     icon: mdi:factory
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 31101
     value_type: U_WORD
     accuracy_decimals: 0
-    skip_updates: 60
     internal: true
     on_value:
       then:
@@ -485,12 +495,11 @@ sensor:
   - platform: modbus_controller
     id: bms_version
     icon: mdi:factory
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 31102
     value_type: U_WORD
     accuracy_decimals: 0
-    skip_updates: 60
     internal: true
     on_value:
       then:
@@ -505,13 +514,12 @@ select:
     id: "rs485_control_mode"
     icon: mdi:connection
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_medium
     address: 42000
     value_type: U_WORD
     optionsmap:
       "enable": 21930
       "disable": 21947
-    skip_updates: 10
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -78
@@ -520,14 +528,13 @@ select:
     id: "user_work_mode"
     icon: mdi:auto-mode
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_medium
     address: 43000
     value_type: U_WORD
     optionsmap:
       "manual": 0
       "anti-feed": 1
       "ai": 2
-    skip_updates: 10
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -77
@@ -535,13 +542,12 @@ select:
   - name: "Backup Function"
     id: "backup_function"
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_medium
     address: 41200
     value_type: U_WORD
     optionsmap:
       "enable": 0
       "disable": 1
-    skip_updates: 10
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -76
@@ -549,19 +555,33 @@ select:
   - name: "Set Charge ⁄ Discharge"
     id: "set_chargedischarge"
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_medium
     address: 42010
     value_type: U_WORD
     optionsmap:
       "stop": 0
       "charge": 1
       "discharge": 2
-    skip_updates: 10
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -75
 
 number:
+  - platform: template
+    name: "SOC Limit Before 14:00"
+    id: soc_limit_before_14
+    icon: mdi:battery-clock
+    min_value: 50
+    max_value: 99
+    step: 1
+    initial_value: 90
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -89
+
   - platform: template
     name: "Target Grid (Charging)"
     id: target_grid_charge
@@ -606,7 +626,7 @@ number:
     icon: mdi:tune-variant
     mode: box
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 44002
     value_type: U_WORD
@@ -614,7 +634,6 @@ number:
     min_value: 0
     max_value: 2500
     step: 1
-    skip_updates: 60
     web_server:
       sorting_group_id: AutoMode
       sorting_weight: -82
@@ -624,7 +643,7 @@ number:
     icon: mdi:tune-variant
     mode: box
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 44003
     value_type: U_WORD
@@ -632,7 +651,6 @@ number:
     min_value: 0
     max_value: 2500
     step: 1
-    skip_updates: 60
     web_server:
       sorting_group_id: AutoMode
       sorting_weight: -81
@@ -641,7 +659,7 @@ number:
     id: "charging_cutoff_capacity"
     icon: mdi:battery-90
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 44000
     value_type: U_WORD
@@ -649,7 +667,6 @@ number:
     min_value: 80
     max_value: 100
     multiply: 10
-    skip_updates: 60
     web_server:
       sorting_group_id: AutoMode
       sorting_weight: -80
@@ -658,7 +675,7 @@ number:
     id: "discharging_cutoff_capacity"
     icon: mdi:battery-10
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 44001
     value_type: U_WORD
@@ -666,7 +683,6 @@ number:
     min_value: 12
     max_value: 30
     multiply: 10
-    skip_updates: 60
     web_server:
       sorting_group_id: AutoMode
       sorting_weight: -79
@@ -676,7 +692,7 @@ number:
     icon: mdi:battery-charging-medium 
     mode: box
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 42011
     value_type: U_WORD
@@ -684,7 +700,6 @@ number:
     min_value: 12
     max_value: 100
     step: 1
-    skip_updates: 60
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -74
@@ -694,7 +709,7 @@ number:
     icon: mdi:tune-variant
     mode: box
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 42020
     value_type: U_WORD
@@ -702,7 +717,6 @@ number:
     min_value: 0
     max_value: 2500
     step: 1
-    skip_updates: 60
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -73
@@ -712,7 +726,7 @@ number:
     icon: mdi:tune-variant
     mode: box
     platform: modbus_controller
-    modbus_controller_id: mt
+    modbus_controller_id: mt_slow
     register_type: holding
     address: 42021
     value_type: U_WORD
@@ -720,12 +734,21 @@ number:
     min_value: 0
     max_value: 2500
     step: 1
-    skip_updates: 60
     web_server:
       sorting_group_id: AdvControl
       sorting_weight: -72
 
 switch:
+  - platform: template
+    name: "Prevent Full Charge Before 14:00"
+    id: prevent_full_charge_before_14
+    icon: mdi:battery-clock-outline
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    web_server:
+      sorting_group_id: AutoMode
+      sorting_weight: -90
+
   - platform: template
     name: "Automatic mode"
     id: automatic_mode
@@ -747,7 +770,7 @@ switch:
           value: '0'
     web_server:
       sorting_group_id: AutoMode
-      sorting_weight: -87
+      sorting_weight: -91
   
 script:
   - id: script_set_charge_power
@@ -770,6 +793,7 @@ script:
       - select.set:
           id: set_chargedischarge
           option: "charge"
+      - delay: 30ms
 
   - id: script_set_mode_discharge
     mode: restart
@@ -777,6 +801,7 @@ script:
       - select.set:
           id: set_chargedischarge
           option: "discharge"
+      - delay: 30ms
 
   - id: script_set_mode_stop
     mode: restart
@@ -784,6 +809,7 @@ script:
       - select.set:
           id: set_chargedischarge
           option: "stop"
+      - delay: 30ms
 
   - id: script_enable_rs485
     mode: restart
@@ -791,6 +817,7 @@ script:
       - select.set:
           id: rs485_control_mode
           option: "enable"
+      - delay: 30ms
 
 interval:
   - interval: 10s
@@ -801,7 +828,8 @@ interval:
           if (!id(grid_power).has_state()) return;
           if (!id(battery_state_of_charge).has_state()) return;
 
-          if (id(rs485_control_mode).state == "disable") {
+          if (id(rs485_control_mode).active_index().has_value() &&
+              id(rs485_control_mode).active_index().value() == 1) {
             id(script_enable_rs485).execute();
           }
 
@@ -848,6 +876,15 @@ interval:
           if (new_setpoint_final < -LimitMax_DischargeP) new_setpoint_final = -LimitMax_DischargeP;
 
           if (new_setpoint_final > 0 && soc >= LimitMax_SOC) new_setpoint_final = 0;
+          // Optional SOC ceiling until 14:00 local time; charging only.
+          // With invalid clock, do not apply a potentially stale time-based limit.
+          if (id(prevent_full_charge_before_14).state) {
+            auto now = id(local_time).now();
+            if (now.is_valid() && now.hour < 14 &&
+                soc >= id(soc_limit_before_14).state && new_setpoint_final > 0) {
+              new_setpoint_final = 0;
+            }
+          }
           if (new_setpoint_final < 0 && soc <= LimitMin_SOC)  new_setpoint_final = 0;
 
           if (fabs(new_setpoint_final - curr_setpoint) < 50) {
